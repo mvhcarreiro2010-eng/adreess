@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Distância Pessoas x Lojas (CSV)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 22px;
+      margin-bottom: 10px;
+    }
+    label {
+      font-weight: bold;
+      display: block;
+      margin-top: 15px;
+    }
+    input[type="text"], input[type="file"] {
+      width: 100%;
+      max-width: 500px;
+      padding: 6px;
+      margin-top: 5px;
+      box-sizing: border-box;
+    }
+    .btn {
+      margin-top: 20px;
+      padding: 10px 16px;
+      cursor: pointer;
+      border: 1px solid #333;
+      background: #333;
+      color: #fff;
+      border-radius: 4px;
+    }
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    #status {
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 20px;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px 8px;
+      text-align: left;
+    }
+    th {
+      background: #f0f0f0;
+    }
+    #downloadLink {
+      display: inline-block;
+      margin-top: 15px;
+      text-decoration: none;
+      padding: 8px 12px;
+      border-radius: 4px;
+      border: 1px solid #007bff;
+      color: #007bff;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Distância entre moradia das pessoas e lojas (via CSV)</h1>
+
+  <p>Passo a passo:</p>
+  <ol>
+    <li>Pega sua <strong>API Key do Google</strong> (Geocoding API).</li>
+    <li>Exporta sua base de <strong>pessoas</strong> em CSV.</li>
+    <li>Exporta sua base de <strong>lojas</strong> em CSV.</li>
+    <li>Sobe os arquivos aqui e manda calcular.</li>
+  </ol>
+
+  <label for="apiKey">API Key do Google (Geocoding):</label>
+  <input type="text" id="apiKey" placeholder="Cole aqui sua API Key do Google">
+
+  <label for="csvPessoas">CSV de pessoas (nome, endereco, cep):</label>
+  <input type="file" id="csvPessoas" accept=".csv">
+
+  <label for="csvLojas">CSV de lojas (nome, endereco, cep):</label>
+  <input type="file" id="csvLojas" accept=".csv">
+
+  <button class="btn" id="btnCalcular">Calcular distâncias</button>
+
+  <div id="status"></div>
+
+  <a id="downloadLink" href="#" style="display:none;">Baixar resultado em CSV</a>
+
+  <table id="tabelaResultado" style="display:none;">
+    <thead>
+      <tr>
+        <th>Pessoa</th>
+        <th>Endereço pessoa</th>
+        <th>Loja</th>
+        <th>Endereço loja</th>
+        <th>Distância (km)</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    const btnCalcular = document.getElementById("btnCalcular");
+    const statusDiv = document.getElementById("status");
+    const tabela = document.getElementById("tabelaResultado");
+    const tbody = tabela.querySelector("tbody");
+    const downloadLink = document.getElementById("downloadLink");
+
+    let pessoasRows = [];
+    let lojasRows = [];
+
+    // Detecta delimitador ("," ou ";")
+    function detectarDelimitador(headerLine) {
+      const pontoEVirgula = (headerLine.match(/;/g) || []).length;
+      const virgula = (headerLine.match(/,/g) || []).length;
+      return pontoEVirgula > virgula ? ";" : ",";
+    }
+
+    // Parse simples de CSV em array de objetos
+    function parseCSV(text) {
+      const linhas = text.split(/\r?\n/).filter(l => l.trim() !== "");
+      if (linhas.length === 0) return [];
+
+      const delimitador = detectarDelimitador(linhas[0]);
+      const headers = linhas[0].split(delimitador).map(h => h.trim());
+
+      return linhas.slice(1).map(linha => {
+        const cols = linha.split(delimitador);
+        const obj = {};
+        headers.forEach((h, i) => {
+          obj[h.toLowerCase()] = (cols[i] || "").trim();
+        });
+        return obj;
+      });
+    }
+
+    // Lê arquivo CSV (File) e retorna Promise com array de objetos
+    function lerCSV(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => {
+          const text = e.target.result;
+          resolve(parseCSV(text));
+        };
+        reader.onerror = e => reject(e);
+        reader.readAsText(file, "UTF-8");
+      });
+    }
+
+    // Geocodificação via Google
+    async function geocodificar(enderecoTexto, apiKey) {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(enderecoTexto)}&key=${apiKey}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+
+      if (data.status === "OK" && data.results.length > 0) {
+        const loc = data.results[0].geometry.location;
+        return { lat: loc.lat, lon: loc.lng };
+      } else {
+        console.warn("Falha ao geocodificar:", enderecoTexto, data.status);
+        return null;
+      }
+    }
+
+    // Fórmula de Haversine
+    function distanciaKm(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const toRad = grau => grau * Math.PI / 180;
+
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    // Pequena pausa entre requisições para não explodir limite
+    function delay(ms) {
+      return new Promise(res => setTimeout(res, ms));
+    }
+
+    btnCalcular.addEventListener("click", async () => {
+      const apiKey = document.getElementById("apiKey").value.trim();
+      const filePessoas = document.getElementById("csvPessoas").files[0];
+      const fileLojas = document.getElementById("csvLojas").files[0];
+
+      if (!apiKey) {
+        alert("Cola sua API Key do Google primeiro.");
+        return;
+      }
+      if (!filePessoas || !fileLojas) {
+        alert("Selecione os dois arquivos CSV (pessoas e lojas).");
+        return;
+      }
+
+      btnCalcular.disabled = true;
+      statusDiv.textContent = "Lendo arquivos CSV...";
+      tabela.style.display = "none";
+      downloadLink.style.display = "none";
+      tbody.innerHTML = "";
+
+      try {
+        pessoasRows = await lerCSV(filePessoas);
+        lojasRows = await lerCSV(fileLojas);
+
+        if (!pessoasRows.length || !lojasRows.length) {
+          alert("Algum dos arquivos está vazio ou sem formato válido.");
+          btnCalcular.disabled = false;
+          statusDiv.textContent = "";
+          return;
+        }
+
+        // Checa se tem as colunas mínimas
+        const colsP = Object.keys(pessoasRows[0]);
+        const colsL = Object.keys(lojasRows[0]);
+
+        if (!colsP.includes("nome") || !colsP.includes("endereco") || !colsP.includes("cep")) {
+          alert("CSV de pessoas precisa ter colunas: nome, endereco, cep");
+          btnCalcular.disabled = false;
+          statusDiv.textContent = "";
+          return;
+        }
+        if (!colsL.includes("nome") || !colsL.includes("endereco") || !colsL.includes("cep")) {
+          alert("CSV de lojas precisa ter colunas: nome, endereco, cep");
+          btnCalcular.disabled = false;
+          statusDiv.textContent = "";
+          return;
+        }
+
+        statusDiv.textContent = "Geocodificando endereços das pessoas...";
+        // Geocodificar pessoas
+        const pessoasGeo = [];
+        for (let i = 0; i < pessoasRows.length; i++) {
+          const p = pessoasRows[i];
+          const textoEnd = `${p.endereco}, ${p.cep}, Brasil`;
+          statusDiv.textContent = `Geocodificando pessoa ${i + 1}/${pessoasRows.length}...`;
+          const coord = await geocodificar(textoEnd, apiKey);
+          pessoasGeo.push({ ...p, ...coord });
+          await delay(150); // pequena pausa
+        }
+
+        statusDiv.textContent = "Geocodificando endereços das lojas...";
+        // Geocodificar lojas
+        const lojasGeo = [];
+        for (let j = 0; j < lojasRows.length; j++) {
+          const l = lojasRows[j];
+          const textoEnd = `${l.endereco}, ${l.cep}, Brasil`;
+          statusDiv.textContent = `Geocodificando loja ${j + 1}/${lojasRows.length}...`;
+          const coord = await geocodificar(textoEnd, apiKey);
+          lojasGeo.push({ ...l, ...coord });
+          await delay(150);
+        }
+
+        statusDiv.textContent = "Calculando distâncias...";
+        const resultados = [];
+
+        pessoasGeo.forEach(p => {
+          if (!p.lat || !p.lon) return;
+          lojasGeo.forEach(l => {
+            if (!l.lat || !l.lon) return;
+            const dist = distanciaKm(p.lat, p.lon, l.lat, l.lon);
+            resultados.push({
+              pessoa_nome: p.nome,
+              pessoa_endereco: `${p.endereco} - ${p.cep}`,
+              loja_nome: l.nome,
+              loja_endereco: `${l.endereco} - ${l.cep}`,
+              distancia_km: dist
+            });
+          });
+        });
+
+        // Preenche tabela
+        tbody.innerHTML = "";
+        resultados.forEach(r => {
+          const tr = document.createElement("tr");
+
+          const tdP = document.createElement("td");
+          tdP.textContent = r.pessoa_nome;
+
+          const tdPE = document.createElement("td");
+          tdPE.textContent = r.pessoa_endereco;
+
+          const tdL = document.createElement("td");
+          tdL.textContent = r.loja_nome;
+
+          const tdLE = document.createElement("td");
+          tdLE.textContent = r.loja_endereco;
+
+          const tdD = document.createElement("td");
+          tdD.textContent = r.distancia_km.toFixed(2).replace(".", ",");
+
+          tr.appendChild(tdP);
+          tr.appendChild(tdPE);
+          tr.appendChild(tdL);
+          tr.appendChild(tdLE);
+          tr.appendChild(tdD);
+          tbody.appendChild(tr);
+        });
+
+        tabela.style.display = "table";
+
+        // Gera CSV de saída
+        if (resultados.length > 0) {
+          const header = "pessoa_nome;pessoa_endereco;loja_nome;loja_endereco;distancia_km\n";
+          const linhas = resultados.map(r =>
+            [
+              r.pessoa_nome,
+              r.pessoa_endereco,
+              r.loja_nome,
+              r.loja_endereco,
+              r.distancia_km.toFixed(4).replace(".", ",")
+            ].map(c => `"${c.replace(/"/g, '""')}"`).join(";")
+          );
+          const csvOut = header + linhas.join("\n");
+          const blob = new Blob([csvOut], { type: "text/csv;charset=utf-8;" });
+          const url = URL.createObjectURL(blob);
+          downloadLink.href = url;
+          downloadLink.download = "distancias_pessoas_lojas.csv";
+          downloadLink.style.display = "inline-block";
+        }
+
+        statusDiv.textContent = `Pronto! Foram geradas ${resultados.length} combinações pessoa x loja.`;
+      } catch (err) {
+        console.error(err);
+        alert("Deu algum erro no processo. Veja o console para mais detalhes.");
+        statusDiv.textContent = "Erro ao processar.";
+      } finally {
+        btnCalcular.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
