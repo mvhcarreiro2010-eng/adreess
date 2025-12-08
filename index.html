@@ -67,6 +67,9 @@
       color: #007bff;
       font-size: 14px;
     }
+    a.link-opcao {
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
@@ -103,6 +106,9 @@
         <th>Loja</th>
         <th>Endereço loja</th>
         <th>Distância (km)</th>
+        <th>Ônibus / Rodoviária</th>
+        <th>Aéreo</th>
+        <th>Hospedagem</th>
       </tr>
     </thead>
     <tbody></tbody>
@@ -156,6 +162,24 @@
       });
     }
 
+    // Extrai cidade e estado do resultado de geocoding
+    function extrairCidadeEstado(result) {
+      let cidade = "";
+      let estado = "";
+      (result.address_components || []).forEach(comp => {
+        if (
+          comp.types.includes("locality") ||
+          comp.types.includes("administrative_area_level_2")
+        ) {
+          if (!cidade) cidade = comp.long_name;
+        }
+        if (comp.types.includes("administrative_area_level_1")) {
+          estado = comp.short_name; // SP, RJ, etc.
+        }
+      });
+      return { cidade, estado };
+    }
+
     // Geocodificação via Google
     async function geocodificar(enderecoTexto, apiKey) {
       const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(enderecoTexto)}&key=${apiKey}`;
@@ -163,8 +187,10 @@
       const data = await resp.json();
 
       if (data.status === "OK" && data.results.length > 0) {
-        const loc = data.results[0].geometry.location;
-        return { lat: loc.lat, lon: loc.lng };
+        const result = data.results[0];
+        const loc = result.geometry.location;
+        const { cidade, estado } = extrairCidadeEstado(result);
+        return { lat: loc.lat, lon: loc.lng, cidade, estado };
       } else {
         console.warn("Falha ao geocodificar:", enderecoTexto, data.status);
         return null;
@@ -248,7 +274,11 @@
           const textoEnd = `${p.endereco}, ${p.cep}, Brasil`;
           statusDiv.textContent = `Geocodificando pessoa ${i + 1}/${pessoasRows.length}...`;
           const coord = await geocodificar(textoEnd, apiKey);
-          pessoasGeo.push({ ...p, ...coord });
+          if (coord) {
+            pessoasGeo.push({ ...p, ...coord });
+          } else {
+            pessoasGeo.push({ ...p });
+          }
           await delay(150); // pequena pausa
         }
 
@@ -260,7 +290,11 @@
           const textoEnd = `${l.endereco}, ${l.cep}, Brasil`;
           statusDiv.textContent = `Geocodificando loja ${j + 1}/${lojasRows.length}...`;
           const coord = await geocodificar(textoEnd, apiKey);
-          lojasGeo.push({ ...l, ...coord });
+          if (coord) {
+            lojasGeo.push({ ...l, ...coord });
+          } else {
+            lojasGeo.push({ ...l });
+          }
           await delay(150);
         }
 
@@ -271,13 +305,40 @@
           if (!p.lat || !p.lon) return;
           lojasGeo.forEach(l => {
             if (!l.lat || !l.lon) return;
+
             const dist = distanciaKm(p.lat, p.lon, l.lat, l.lon);
+
+            let linkOnibus = "";
+            let linkAereo = "";
+            let linkHosp = "";
+
+            // Só monta links se a distância passar de 100 km e tiver cidade nos dois lados
+            if (dist > 100 && p.cidade && l.cidade) {
+              const origem = `${p.cidade} ${p.estado || ""}`;
+              const destino = `${l.cidade} ${l.estado || ""}`;
+
+              linkOnibus = `https://www.google.com/search?q=${
+                encodeURIComponent(`ônibus de ${origem} para ${destino}`)
+              }`;
+
+              linkAereo = `https://www.google.com/search?q=${
+                encodeURIComponent(`passagens aéreas de ${origem} para ${destino}`)
+              }`;
+
+              linkHosp = `https://www.google.com/search?q=${
+                encodeURIComponent(`hotéis em ${destino}`)
+              }`;
+            }
+
             resultados.push({
               pessoa_nome: p.nome,
               pessoa_endereco: `${p.endereco} - ${p.cep}`,
               loja_nome: l.nome,
               loja_endereco: `${l.endereco} - ${l.cep}`,
-              distancia_km: dist
+              distancia_km: dist,
+              link_onibus: linkOnibus,
+              link_aereo: linkAereo,
+              link_hospedagem: linkHosp
             });
           });
         });
@@ -302,11 +363,55 @@
           const tdD = document.createElement("td");
           tdD.textContent = r.distancia_km.toFixed(2).replace(".", ",");
 
+          const tdOnibus = document.createElement("td");
+          const tdAereo = document.createElement("td");
+          const tdHosp = document.createElement("td");
+
+          if (r.link_onibus) {
+            const a = document.createElement("a");
+            a.href = r.link_onibus;
+            a.target = "_blank";
+            a.rel = "noopener";
+            a.textContent = "Ver opções";
+            a.className = "link-opcao";
+            tdOnibus.appendChild(a);
+          } else {
+            tdOnibus.textContent = "-";
+          }
+
+          if (r.link_aereo) {
+            const a = document.createElement("a");
+            a.href = r.link_aereo;
+            a.target = "_blank";
+            a.rel = "noopener";
+            a.textContent = "Ver opções";
+            a.className = "link-opcao";
+            tdAereo.appendChild(a);
+          } else {
+            tdAereo.textContent = "-";
+          }
+
+          if (r.link_hospedagem) {
+            const a = document.createElement("a");
+            a.href = r.link_hospedagem;
+            a.target = "_blank";
+            a.rel = "noopener";
+            a.textContent = "Ver opções";
+            a.className = "link-opcao";
+            tdHosp.appendChild(a);
+          } else {
+            tdHosp.textContent = "-";
+          }
+
           tr.appendChild(tdP);
           tr.appendChild(tdPE);
           tr.appendChild(tdL);
           tr.appendChild(tdLE);
           tr.appendChild(tdD);
+          tr.appendChild(tdOnibus);
+          tr.appendChild(tdAereo);
+          tr.appendChild(tdHosp);
+
           tbody.appendChild(tr);
         });
 
@@ -314,15 +419,19 @@
 
         // Gera CSV de saída
         if (resultados.length > 0) {
-          const header = "pessoa_nome;pessoa_endereco;loja_nome;loja_endereco;distancia_km\n";
+          const header =
+            "pessoa_nome;pessoa_endereco;loja_nome;loja_endereco;distancia_km;link_onibus;link_aereo;link_hospedagem\n";
           const linhas = resultados.map(r =>
             [
               r.pessoa_nome,
               r.pessoa_endereco,
               r.loja_nome,
               r.loja_endereco,
-              r.distancia_km.toFixed(4).replace(".", ",")
-            ].map(c => `"${c.replace(/"/g, '""')}"`).join(";")
+              r.distancia_km.toFixed(4).replace(".", ","),
+              r.link_onibus,
+              r.link_aereo,
+              r.link_hospedagem
+            ].map(c => `"${String(c || "").replace(/"/g, '""')}"`).join(";")
           );
           const csvOut = header + linhas.join("\n");
           const blob = new Blob([csvOut], { type: "text/csv;charset=utf-8;" });
